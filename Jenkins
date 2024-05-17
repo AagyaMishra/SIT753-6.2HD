@@ -1,0 +1,109 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_IMAGE = "your-docker-image-name"
+        DOCKER_REGISTRY_CREDENTIALS = 'your-docker-registry-credentials'
+        SONARQUBE_SERVER = 'your-sonarqube-server'
+        AWS_CREDENTIALS = 'your-aws-credentials'
+        NEW_RELIC_API_KEY = 'your-new-relic-api-key'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git 'https://github.com/your-repo.git'
+            }
+        }
+
+        stage('Build') {
+            steps {
+                script {
+                    docker.build("${DOCKER_IMAGE}")
+                }
+            }
+        }
+
+        stage('Test') {
+            steps {
+                script {
+                    docker.image("${DOCKER_IMAGE}").inside {
+                        sh 'npm install'
+                        sh 'npm test' // Assuming Jest for unit tests
+                    }
+                }
+            }
+        }
+
+        stage('Code Quality Analysis') {
+            steps {
+                script {
+                    docker.image("${DOCKER_IMAGE}").inside {
+                        withSonarQubeEnv("${SONARQUBE_SERVER}") {
+                            sh 'sonar-scanner'
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to Test Environment') {
+            steps {
+                script {
+                    docker.image("${DOCKER_IMAGE}").inside {
+                        sh 'docker-compose -f docker-compose.test.yml up -d'
+                    }
+                }
+            }
+        }
+
+        stage('Release to Production') {
+            steps {
+                script {
+                    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: "${AWS_CREDENTIALS}"]]) {
+                        sh 'aws deploy create-deployment --application-name TaskManagerApp --deployment-config-name CodeDeployDefault.AllAtOnce --deployment-group-name TaskManagerDG --s3-location bucket=my-bucket,key=my-key,bundleType=zip'
+                    }
+                }
+            }
+        }
+
+        stage('Monitoring and Alerting') {
+            steps {
+                script {
+                    // Assuming New Relic
+                    sh '''
+                        curl -X POST "https://api.newrelic.com/v2/alerts_conditions/policies.json" \
+                        -H "X-Api-Key:${NEW_RELIC_API_KEY}" \
+                        -H "Content-Type: application/json" \
+                        -d '{
+                            "policy": {
+                                "name": "High Error Rate",
+                                "conditions": [{
+                                    "name": "High error rate",
+                                    "type": "apm_app_metric",
+                                    "entities": ["your-app-id"],
+                                    "metric": "error_percentage",
+                                    "runbook_url": "https://example.com/runbook",
+                                    "terms": [{
+                                        "duration": "5",
+                                        "operator": "above",
+                                        "priority": "critical",
+                                        "threshold": "5",
+                                        "time_function": "all"
+                                    }]
+                                }]
+                            }
+                        }'
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo 'Cleaning up...'
+            cleanWs()
+        }
+    }
+}
